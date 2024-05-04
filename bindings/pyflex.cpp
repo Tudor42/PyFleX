@@ -2774,7 +2774,7 @@ void pyflex_clean() {
     SDL_Quit();
 }
 
-int main() {
+int pymain() {
     pyflex_init();
     pyflex_clean();
 
@@ -3029,7 +3029,7 @@ py::array_t<float> pyflex_get_rigidGlobalPositions() {
 
     int count = 0;
     int numRigids = g_buffers->rigidOffsets.size() - 1;
-    float n_clusters[g_buffers->positions.size()] = {0};
+    float *n_clusters = new float[g_buffers->positions.size()]{0};
 
     for (int i = 0; i < numRigids; i++) {
         const int st = g_buffers->rigidOffsets[i];
@@ -3062,7 +3062,7 @@ py::array_t<float> pyflex_get_rigidGlobalPositions() {
             ptr[i * 3 + 2] /= n_clusters[i];
         }
     }
-
+    delete []n_clusters;
     g_buffers->rigidOffsets.unmap();
     g_buffers->rigidIndices.unmap();
     g_buffers->rigidLocalPositions.unmap();
@@ -3445,7 +3445,9 @@ void pyflex_render(int capture, char *path) {
 
 
 PYBIND11_MODULE(pyflex, m) {
-    m.def("main", &main);
+
+    m.def("main", &pymain);
+
 
     m.def("init", &pyflex_init);
     m.def("set_scene", &pyflex_set_scene);

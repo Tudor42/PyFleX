@@ -10,7 +10,8 @@
 
 // Stubs for unsupported renderers
 //#if PLATFORM_LINUX
-#ifdef __linux__
+
+#if defined(__linux__) || defined(_WIN64)
 DemoContext* CreateDemoContextD3D11() { assert(0); return 0; };
 DemoContext* CreateDemoContextD3D12() { assert(0); return 0; };
 #else
