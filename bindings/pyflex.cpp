@@ -105,6 +105,7 @@ bool g_d3d12 = false;
 bool g_useAsyncCompute = true;
 bool g_increaseGfxLoadForAsyncComputeTesting = false;
 int g_graphics = 0; // 0=ogl, 1=DX11, 2=DX12
+bool window_render;
 
 FluidRenderer* g_fluidRenderer;
 FluidRenderBuffers* g_fluidRenderBuffers;
@@ -531,13 +532,13 @@ inline float sqr(float x) { return x*x; }
 
 void Init(int scene, py::array_t<float> scene_params, bool centerCamera = true, int thread_idx = 0) {
     RandInit();
-
     if (g_solver) {
         if (g_buffers)
             DestroyBuffers(g_buffers);
-
-        DestroyFluidRenderBuffers(g_fluidRenderBuffers);
-        DestroyDiffuseRenderBuffers(g_diffuseRenderBuffers);
+        if (window_render) {
+            DestroyFluidRenderBuffers(g_fluidRenderBuffers);
+            DestroyDiffuseRenderBuffers(g_diffuseRenderBuffers);
+        }
 
         for (auto& iter : g_meshes) {
             NvFlexDestroyTriangleMesh(g_flexLib, iter.first);
@@ -561,6 +562,7 @@ void Init(int scene, py::array_t<float> scene_params, bool centerCamera = true, 
         NvFlexDestroySolver(g_solver);
         g_solver = nullptr;
     }
+
 
     // alloc buffers
     g_buffers = AllocBuffers(g_flexLib);
@@ -734,9 +736,15 @@ void Init(int scene, py::array_t<float> scene_params, bool centerCamera = true, 
     NvFlexSetSolverDescDefaults(&g_solverDesc);
 
     // create scene
-    StartGpuWork();
+    if (window_render) {
+        StartGpuWork();
+    }
+    
     g_scenes[g_scene]->Initialize(scene_params, thread_idx);
-    EndGpuWork();
+
+    if (window_render) {
+        EndGpuWork();
+    }
 
     uint32_t numParticles = g_buffers->positions.size();
     uint32_t maxParticles = numParticles + g_numExtraParticles*g_numExtraMultiplier;
@@ -834,15 +842,16 @@ void Init(int scene, py::array_t<float> scene_params, bool centerCamera = true, 
     // give scene a chance to do some post solver initialization
     g_scenes[g_scene]->PostInitialize();
 
-    // center camera on particles
-    if (centerCamera) {
-        g_camPos = Vec3((g_sceneLower.x + g_sceneUpper.x)*0.5f, min(g_sceneUpper.y*1.25f, 6.0f), g_sceneUpper.z + min(g_sceneUpper.y, 6.0f)*2.0f);
-        g_camAngle = Vec3(0.0f, -DegToRad(15.0f), 0.0f);
+    if (window_render) {
+        // center camera on particles
+        if (centerCamera) {
+            g_camPos = Vec3((g_sceneLower.x + g_sceneUpper.x) * 0.5f, min(g_sceneUpper.y * 1.25f, 6.0f), g_sceneUpper.z + min(g_sceneUpper.y, 6.0f) * 2.0f);
+            g_camAngle = Vec3(0.0f, -DegToRad(15.0f), 0.0f);
 
-        // give scene a chance to modify camera position
-        g_scenes[g_scene]->CenterCamera();
+            // give scene a chance to modify camera position
+            g_scenes[g_scene]->CenterCamera();
+        }
     }
-
     // create active indices (just a contiguous block for the demo)
     g_buffers->activeIndices.resize(g_buffers->positions.size());
     for (int i = 0; i < g_buffers->activeIndices.size(); ++i)
@@ -954,8 +963,10 @@ void Init(int scene, py::array_t<float> scene_params, bool centerCamera = true, 
     }
 
     // create render buffers
-    g_fluidRenderBuffers = CreateFluidRenderBuffers(maxParticles, g_interop);
-    g_diffuseRenderBuffers = CreateDiffuseRenderBuffers(g_maxDiffuseParticles, g_interop);
+    if (window_render) {
+        g_fluidRenderBuffers = CreateFluidRenderBuffers(maxParticles, g_interop);
+        g_diffuseRenderBuffers = CreateDiffuseRenderBuffers(g_maxDiffuseParticles, g_interop);
+    }
 
     // perform initial sim warm up
     if (g_warmup) {
@@ -1822,179 +1833,184 @@ int DoUI() {
 }
 
 void UpdateFrame(py::array_t<float> update_params) {
-    static double lastTime;
+    double frameBeginTime;
+    float newSimLatency;
+    int newScene;
+    double renderBeginTime, renderEndTime;
+    double currentTime;
+    double waitBeginTime, waitEndTime;
+    if(window_render){
+        static double lastTime;
 
-    // real elapsed frame time
-    double frameBeginTime = GetSeconds();
+        // real elapsed frame time
+        frameBeginTime = GetSeconds();
 
-    g_realdt = float(frameBeginTime - lastTime);
-    lastTime = frameBeginTime;
+        g_realdt = float(frameBeginTime - lastTime);
+        lastTime = frameBeginTime;
 
-    // do gamepad input polling
-    double currentTime = frameBeginTime;
-    static double lastJoyTime = currentTime;
+        // do gamepad input polling
+        currentTime = frameBeginTime;
+        static double lastJoyTime = currentTime;
 
-    if (g_gamecontroller && currentTime - lastJoyTime > g_dt) {
-        lastJoyTime = currentTime;
+        if (g_gamecontroller && currentTime - lastJoyTime > g_dt) {
+            lastJoyTime = currentTime;
 
-        int leftStickX = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_LEFTX);
-        int leftStickY = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_LEFTY);
-        int rightStickX = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_RIGHTX);
-        int rightStickY = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_RIGHTY);
-        int leftTrigger = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-        int rightTrigger = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            int leftStickX = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_LEFTX);
+            int leftStickY = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_LEFTY);
+            int rightStickX = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_RIGHTX);
+            int rightStickY = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_RIGHTY);
+            int leftTrigger = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+            int rightTrigger = SDL_GameControllerGetAxis(g_gamecontroller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
 
-        Vec2 leftStick(joyAxisFilter(leftStickX, 0), joyAxisFilter(leftStickY, 0));
-        Vec2 rightStick(joyAxisFilter(rightStickX, 1), joyAxisFilter(rightStickY, 1));
-        Vec2 trigger(leftTrigger / 32768.0f, rightTrigger / 32768.0f);
+            Vec2 leftStick(joyAxisFilter(leftStickX, 0), joyAxisFilter(leftStickY, 0));
+            Vec2 rightStick(joyAxisFilter(rightStickX, 1), joyAxisFilter(rightStickY, 1));
+            Vec2 trigger(leftTrigger / 32768.0f, rightTrigger / 32768.0f);
 
-        if (leftStick.x != 0.0f || leftStick.y != 0.0f ||
-            rightStick.x != 0.0f || rightStick.y != 0.0f) {
-            // note constant factor to speed up analog control compared to digital because it is more controllable.
-            g_camVel.z = -4 * g_camSpeed * leftStick.y;
-            g_camVel.x = 4 * g_camSpeed * leftStick.x;
+            if (leftStick.x != 0.0f || leftStick.y != 0.0f ||
+                rightStick.x != 0.0f || rightStick.y != 0.0f) {
+                // note constant factor to speed up analog control compared to digital because it is more controllable.
+                g_camVel.z = -4 * g_camSpeed * leftStick.y;
+                g_camVel.x = 4 * g_camSpeed * leftStick.x;
 
-            // cam orientation
-            g_camAngle.x -= rightStick.x * 0.05f;
-            g_camAngle.y -= rightStick.y * 0.05f;
+                // cam orientation
+                g_camAngle.x -= rightStick.x * 0.05f;
+                g_camAngle.y -= rightStick.y * 0.05f;
+            }
+
+            // Handle left stick motion
+            static bool bLeftStick = false;
+
+            if ((leftStick.x != 0.0f || leftStick.y != 0.0f) && !bLeftStick) {
+                bLeftStick = true;
+            }
+            else if ((leftStick.x == 0.0f && leftStick.y == 0.0f) && bLeftStick) {
+                bLeftStick = false;
+                g_camVel.z = -4 * g_camSpeed * leftStick.y;
+                g_camVel.x = 4 * g_camSpeed * leftStick.x;
+            }
+
+            // Handle triggers as controller button events
+            void ControllerButtonEvent(SDL_ControllerButtonEvent event);
+
+            static bool bLeftTrigger = false;
+            static bool bRightTrigger = false;
+            SDL_ControllerButtonEvent e;
+
+            if (!bLeftTrigger && trigger.x > 0.0f) {
+                e.type = SDL_CONTROLLERBUTTONDOWN;
+                e.button = SDL_CONTROLLER_BUTTON_LEFT_TRIGGER;
+                ControllerButtonEvent(e);
+                bLeftTrigger = true;
+            }
+            else if (bLeftTrigger && trigger.x == 0.0f) {
+                e.type = SDL_CONTROLLERBUTTONUP;
+                e.button = SDL_CONTROLLER_BUTTON_LEFT_TRIGGER;
+                ControllerButtonEvent(e);
+                bLeftTrigger = false;
+            }
+
+            if (!bRightTrigger && trigger.y > 0.0f) {
+                e.type = SDL_CONTROLLERBUTTONDOWN;
+                e.button = SDL_CONTROLLER_BUTTON_RIGHT_TRIGGER;
+                ControllerButtonEvent(e);
+                bRightTrigger = true;
+            }
+            else if (bRightTrigger && trigger.y == 0.0f) {
+                e.type = SDL_CONTROLLERBUTTONDOWN;
+                e.button = SDL_CONTROLLER_BUTTON_RIGHT_TRIGGER;
+                ControllerButtonEvent(e);
+                bRightTrigger = false;
+            }
         }
 
-        // Handle left stick motion
-        static bool bLeftStick = false;
+        //-------------------------------------------------------------------
+        // Scene Update
 
-        if ((leftStick.x != 0.0f || leftStick.y != 0.0f) && !bLeftStick) {
-            bLeftStick = true;
-        }
-        else if ((leftStick.x == 0.0f && leftStick.y == 0.0f) && bLeftStick) {
-            bLeftStick = false;
-            g_camVel.z = -4 * g_camSpeed * leftStick.y;
-            g_camVel.x = 4 * g_camSpeed * leftStick.x;
-        }
+        waitBeginTime = GetSeconds();
 
-        // Handle triggers as controller button events
-        void ControllerButtonEvent(SDL_ControllerButtonEvent event);
+        MapBuffers(g_buffers);
 
-        static bool bLeftTrigger = false;
-        static bool bRightTrigger = false;
-        SDL_ControllerButtonEvent e;
+        waitEndTime = GetSeconds();
 
-        if (!bLeftTrigger && trigger.x > 0.0f) {
-            e.type = SDL_CONTROLLERBUTTONDOWN;
-            e.button = SDL_CONTROLLER_BUTTON_LEFT_TRIGGER;
-            ControllerButtonEvent(e);
-            bLeftTrigger = true;
-        }
-        else if (bLeftTrigger && trigger.x == 0.0f) {
-            e.type = SDL_CONTROLLERBUTTONUP;
-            e.button = SDL_CONTROLLER_BUTTON_LEFT_TRIGGER;
-            ControllerButtonEvent(e);
-            bLeftTrigger = false;
+        // Getting timers causes CPU/GPU sync, so we do it after a map
+        newSimLatency = NvFlexGetDeviceLatency(g_solver, &g_GpuTimers.computeBegin, &g_GpuTimers.computeEnd, &g_GpuTimers.computeFreq);
+        float newGfxLatency = RendererGetDeviceTimestamps(&g_GpuTimers.renderBegin, &g_GpuTimers.renderEnd, &g_GpuTimers.renderFreq);
+        (void)newGfxLatency;
+
+        UpdateCamera();
+
+        if (!g_pause || g_step) {
+            UpdateEmitters();
+            UpdateMouse();
+            UpdateWind();
+            UpdateScene(update_params);
         }
 
-        if (!bRightTrigger && trigger.y > 0.0f) {
-            e.type = SDL_CONTROLLERBUTTONDOWN;
-            e.button = SDL_CONTROLLER_BUTTON_RIGHT_TRIGGER;
-            ControllerButtonEvent(e);
-            bRightTrigger = true;
+        //-------------------------------------------------------------------
+        // Render
+        renderBeginTime = GetSeconds();
+
+        if (g_profile && (!g_pause || g_step)) {
+            if (g_benchmark) {
+                g_numDetailTimers = NvFlexGetDetailTimers(g_solver, &g_detailTimers);
+            }
+            else {
+                memset(&g_timers, 0, sizeof(g_timers));
+                NvFlexGetTimers(g_solver, &g_timers);
+            }
         }
-        else if (bRightTrigger && trigger.y == 0.0f) {
-            e.type = SDL_CONTROLLERBUTTONDOWN;
-            e.button = SDL_CONTROLLER_BUTTON_RIGHT_TRIGGER;
-            ControllerButtonEvent(e);
-            bRightTrigger = false;
+
+        StartFrame(Vec4(g_clearColor, 1.0f));
+
+        // main scene render
+        RenderScene();
+        RenderDebug();
+
+        newScene = DoUI();
+
+        EndFrame();
+
+        // If user has disabled async compute, ensure that no compute can overlap
+        // graphics by placing a sync between them
+        if (!g_useAsyncCompute)
+            NvFlexComputeWaitForGraphics(g_flexLib);
+
+        UnmapBuffers(g_buffers);
+
+        // move mouse particle (must be done here as GetViewRay() uses the GL projection state)
+        if (g_mouseParticle != -1) {
+            Vec3 origin, dir;
+            GetViewRay(g_lastx, g_screenHeight - g_lasty, origin, dir);
+
+            g_mousePos = origin + dir*g_mouseT;
+        }
+
+        if (g_capture) {
+            TgaImage img;
+            img.m_width = g_screenWidth;
+            img.m_height = g_screenHeight;
+            img.m_data = new uint32_t[g_screenWidth*g_screenHeight];
+
+            ReadFrame((int*)img.m_data, g_screenWidth, g_screenHeight);
+            TgaSave(g_ffmpeg, img, false);
+
+            // fwrite(img.m_data, sizeof(uint32_t)*g_screenWidth*g_screenHeight, 1, g_ffmpeg);
+
+            delete[] img.m_data;
+        }
+
+        renderEndTime = GetSeconds();
+
+        // if user requested a scene reset process it now
+        if (g_resetScene) {
+            // Reset();
+            g_resetScene = false;
         }
     }
-
-    //-------------------------------------------------------------------
-    // Scene Update
-
-    double waitBeginTime = GetSeconds();
-
-    MapBuffers(g_buffers);
-
-    double waitEndTime = GetSeconds();
-
-    // Getting timers causes CPU/GPU sync, so we do it after a map
-    float newSimLatency = NvFlexGetDeviceLatency(g_solver, &g_GpuTimers.computeBegin, &g_GpuTimers.computeEnd, &g_GpuTimers.computeFreq);
-    float newGfxLatency = RendererGetDeviceTimestamps(&g_GpuTimers.renderBegin, &g_GpuTimers.renderEnd, &g_GpuTimers.renderFreq);
-    (void)newGfxLatency;
-
-    UpdateCamera();
-
-    if (!g_pause || g_step) {
-        UpdateEmitters();
-        UpdateMouse();
-        UpdateWind();
-        UpdateScene(update_params);
-    }
-
-    //-------------------------------------------------------------------
-    // Render
-
-    double renderBeginTime = GetSeconds();
-
-    if (g_profile && (!g_pause || g_step)) {
-        if (g_benchmark) {
-            g_numDetailTimers = NvFlexGetDetailTimers(g_solver, &g_detailTimers);
-        }
-        else {
-            memset(&g_timers, 0, sizeof(g_timers));
-            NvFlexGetTimers(g_solver, &g_timers);
-        }
-    }
-
-    StartFrame(Vec4(g_clearColor, 1.0f));
-
-    // main scene render
-    RenderScene();
-    RenderDebug();
-
-    int newScene = DoUI();
-
-    EndFrame();
-
-    // If user has disabled async compute, ensure that no compute can overlap
-    // graphics by placing a sync between them
-    if (!g_useAsyncCompute)
-        NvFlexComputeWaitForGraphics(g_flexLib);
-
-    UnmapBuffers(g_buffers);
-
-    // move mouse particle (must be done here as GetViewRay() uses the GL projection state)
-    if (g_mouseParticle != -1) {
-        Vec3 origin, dir;
-        GetViewRay(g_lastx, g_screenHeight - g_lasty, origin, dir);
-
-        g_mousePos = origin + dir*g_mouseT;
-    }
-
-    if (g_capture) {
-        TgaImage img;
-        img.m_width = g_screenWidth;
-        img.m_height = g_screenHeight;
-        img.m_data = new uint32_t[g_screenWidth*g_screenHeight];
-
-        ReadFrame((int*)img.m_data, g_screenWidth, g_screenHeight);
-        TgaSave(g_ffmpeg, img, false);
-
-        // fwrite(img.m_data, sizeof(uint32_t)*g_screenWidth*g_screenHeight, 1, g_ffmpeg);
-
-        delete[] img.m_data;
-    }
-
-    double renderEndTime = GetSeconds();
-
-    // if user requested a scene reset process it now
-    if (g_resetScene) {
-        // Reset();
-        g_resetScene = false;
-    }
-
     //-------------------------------------------------------------------
     // Flex Update
 
     double updateBeginTime = GetSeconds();
-
     // send any particle updates to the solver
     NvFlexSetParticles(g_solver, g_buffers->positions.buffer, nullptr);
     NvFlexSetVelocities(g_solver, g_buffers->velocities.buffer, nullptr);
@@ -2070,29 +2086,30 @@ void UpdateFrame(py::array_t<float> update_params) {
 
     //-------------------------------------------------------
     // Update the on-screen timers
+    if(window_render){
+        auto newUpdateTime = float(updateEndTime - updateBeginTime);
+        auto newRenderTime = float(renderEndTime - renderBeginTime);
+        auto newWaitTime = float(waitBeginTime - waitEndTime);
 
-    auto newUpdateTime = float(updateEndTime - updateBeginTime);
-    auto newRenderTime = float(renderEndTime - renderBeginTime);
-    auto newWaitTime = float(waitBeginTime - waitEndTime);
+        // Exponential filter to make the display easier to read
+        const float timerSmoothing = 0.05f;
 
-    // Exponential filter to make the display easier to read
-    const float timerSmoothing = 0.05f;
+        g_updateTime = (g_updateTime == 0.0f) ? newUpdateTime : Lerp(g_updateTime, newUpdateTime, timerSmoothing);
+        g_renderTime = (g_renderTime == 0.0f) ? newRenderTime : Lerp(g_renderTime, newRenderTime, timerSmoothing);
+        g_waitTime = (g_waitTime == 0.0f) ? newWaitTime : Lerp(g_waitTime, newWaitTime, timerSmoothing);
+        g_simLatency = (g_simLatency == 0.0f) ? newSimLatency : Lerp(g_simLatency, newSimLatency, timerSmoothing);
 
-    g_updateTime = (g_updateTime == 0.0f) ? newUpdateTime : Lerp(g_updateTime, newUpdateTime, timerSmoothing);
-    g_renderTime = (g_renderTime == 0.0f) ? newRenderTime : Lerp(g_renderTime, newRenderTime, timerSmoothing);
-    g_waitTime = (g_waitTime == 0.0f) ? newWaitTime : Lerp(g_waitTime, newWaitTime, timerSmoothing);
-    g_simLatency = (g_simLatency == 0.0f) ? newSimLatency : Lerp(g_simLatency, newSimLatency, timerSmoothing);
+        if (g_benchmark) newScene = BenchmarkUpdate();
 
-    if (g_benchmark) newScene = BenchmarkUpdate();
+        // flush out the last frame before freeing up resources in the event of a scene change
+        // this is necessary for d3d12
+        PresentFrame(g_vsync);
 
-    // flush out the last frame before freeing up resources in the event of a scene change
-    // this is necessary for d3d12
-    PresentFrame(g_vsync);
-
-    // if gui or benchmark requested a scene change process it now
-    if (newScene != -1) {
-        g_scene = newScene;
-        // Init(g_scene);
+        // if gui or benchmark requested a scene change process it now
+        if (newScene != -1) {
+            g_scene = newScene;
+            // Init(g_scene);
+        }
     }
 }
 
@@ -2428,7 +2445,7 @@ char* make_path(char* full_path, std::string path) {
     return full_path;
 }
 
-void pyflex_init() {
+void pyflex_init(bool render=true) {
 
     // Customized scenes
     g_scenes.push_back(new yz_BunnyBath("Bunny Bath", true));
@@ -2443,7 +2460,9 @@ void pyflex_init() {
     g_scenes.push_back(new yz_FluidShake("Fluid Shake"));
     g_scenes.push_back(new yz_BoxBathExt("Box Bath Extension", true));
     g_scenes.push_back(new yz_FluidIceShake("Fluid Ice Shake"));
+    g_scenes.push_back(new WaterBalloon("Water Balloons"));
 
+    window_render = render;
     /*
     // opening scene
     g_scenes.push_back(new PotPourri("Pot Pourri"));
@@ -2661,21 +2680,21 @@ void pyflex_init() {
 
     // granular scenes
     g_scenes.push_back(new GranularPile("Granular Pile"));
-
+    
     // coupling scenes
     g_scenes.push_back(new ParachutingBunnies("Parachuting Bunnies"));
-    g_scenes.push_back(new WaterBalloon("Water Balloons"));
     g_scenes.push_back(new RigidFluidCoupling("Rigid Fluid Coupling"));
-    g_scenes.push_back(new FluidBlock("Fluid Block"));
-    g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Water", false));
     g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Goo", true));
     g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
+    g_scenes.push_back(new FluidBlock("Fluid Block"));
+    g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Water", false));
      */
 
-    // init graphics
-    RenderInitOptions options;
+    if (window_render) {
+        // init graphics
+        RenderInitOptions options;
 
-    switch (g_graphics) {
+        switch (g_graphics) {
         case 0:
             break;
         case 1:
@@ -2688,15 +2707,15 @@ void pyflex_init() {
             break;
         default:
             assert(0);
-    }
+        }
 
-    // Create the demo context
-    CreateDemoContext(g_graphics);
+        // Create the demo context
+        CreateDemoContext(g_graphics);
 
-    std::string str;
-    str = "Flex Demo (Compute: CUDA) ";
+        std::string str;
+        str = "Flex Demo (Compute: CUDA) ";
 
-    switch (g_graphics) {
+        switch (g_graphics) {
         case 0:
             str += "(Graphics: OpenGL)";
             break;
@@ -2706,23 +2725,23 @@ void pyflex_init() {
         case 2:
             str += "(Graphics: DX12)";
             break;
+        }
+        const char* title = str.c_str();
+
+        SDLInit(title);
+        options.window = g_window;
+        options.numMsaaSamples = g_msaaSamples;
+        options.asyncComputeBenchmark = g_asyncComputeBenchmark;
+        options.defaultFontHeight = -1;
+        options.fullscreen = g_fullscreen;
+
+        InitRender(options);
+
+        if (g_fullscreen)
+            SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+
+        ReshapeWindow(g_screenWidth, g_screenHeight);
     }
-    const char *title = str.c_str();
-
-    SDLInit(title);
-
-    options.window = g_window;
-    options.numMsaaSamples = g_msaaSamples;
-    options.asyncComputeBenchmark = g_asyncComputeBenchmark;
-    options.defaultFontHeight = -1;
-    options.fullscreen = g_fullscreen;
-
-    InitRender(options);
-
-    if (g_fullscreen)
-        SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-
-    ReshapeWindow(g_screenWidth, g_screenHeight);
 
     NvFlexInitDesc desc;
     desc.deviceIndex = g_device;
@@ -2749,8 +2768,9 @@ void pyflex_init() {
         g_scene = BenchmarkInit();
 
     // create shadow maps
-    g_shadowMap = ShadowCreate();
-
+    if(window_render){
+        g_shadowMap = ShadowCreate();
+    }
     // init default scene
     // StartGpuWork();
     // Init(g_scene);
@@ -2841,7 +2861,9 @@ void pyflex_step(py::array_t<float> update_params, int capture, char *path) {
     }
 
     UpdateFrame(update_params);
-    SDL_EventFunc();
+    if (window_render) {
+        SDL_EventFunc();
+    }
 
     if (capture == 1) {
         g_capture = false;
@@ -3272,6 +3294,11 @@ py::array_t<float> pyflex_get_sceneLower() {
 }
 
 void pyflex_render(int capture, char *path) {
+    if (!window_render) {
+        perror("Rendering is disabled\n");
+        return;
+    }
+
     if (capture == 1) {
         g_capture = true;
         g_ffmpeg = fopen(path, "wb");
@@ -3448,8 +3475,8 @@ PYBIND11_MODULE(pyflex, m) {
 
     m.def("main", &pymain);
 
-
-    m.def("init", &pyflex_init);
+    m.def("init", &pyflex_init,
+        py::arg("render")=true);
     m.def("set_scene", &pyflex_set_scene);
     m.def("clean", &pyflex_clean);
     m.def("step", &pyflex_step,

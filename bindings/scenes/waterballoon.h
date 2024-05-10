@@ -54,8 +54,12 @@ public:
 
 		mCloths.push_back(balloon);
 	}
-
-	void Initialize()
+	char* make_path(char* full_path, std::string path) {
+		strcpy(full_path, getenv("PYFLEXROOT"));
+		strcat(full_path, path.c_str());
+		return full_path;
+	}
+	void Initialize(py::array_t<float> scene_params, int thread_idx = 0)
 	{
 		mCloths.resize(0);
 
@@ -91,11 +95,10 @@ public:
 		g_params.viscosity = 0.0;
 		g_params.adhesion = 0.0f;
 		g_params.cohesion = 0.02f;
-
-
-		// add inflatables
-		Mesh* mesh = ImportMesh(GetFilePathByPlatform("../../data/sphere_high.ply").c_str());
-
+	
+		char path[100];
+		make_path(path, "/data/sphere_high.ply");
+		Mesh* mesh = ImportMesh(GetFilePathByPlatform(path).c_str());// GetFilePathByPlatform("../../data/sphere_high.ply").c_str());
 		for (int y = 0; y < 2; ++y)
 			for (int i = 0; i < 2; ++i)
 			{
@@ -145,11 +148,13 @@ public:
 
 		delete mesh;
 
-		g_drawPoints = false;
-		g_drawEllipsoids = true;
+		g_drawPoints = true;
+		g_drawEllipsoids = false;
 		g_drawSprings = 0;
 		g_drawCloth = false;
-		g_warmup = true;
+		g_warmup = false;
+		g_drawDiffuse = true;
+		g_drawMesh = false;
 
 	}
 
@@ -194,17 +199,17 @@ public:
 		NvFlexSetDynamicTriangles(g_solver, g_buffers->triangles.buffer, g_buffers->triangleNormals.buffer, g_buffers->triangles.size() / 3);
 	}
 
-	virtual void Update()
+	virtual void Update(py::array_t<float> update_params)
 	{
 		// temporarily restore the mouse particle's mass so that we can tear it
-		if (g_mouseParticle != -1)
-			g_buffers->positions[g_mouseParticle].w = g_mouseMass;
+		//if (g_mouseParticle != -1)
+		//	g_buffers->positions[g_mouseParticle].w = g_mouseMass;
 
 		// force larger radius for solid interactions to prevent interpenetration
 		g_params.solidRestDistance = g_params.radius;
 
 		// build new particle arrays
-		std::vector<Vec4> newParticles;
+		/*std::vector<Vec4> newParticles;
 		std::vector<Vec4> newParticlesRest;
 		std::vector<Vec3> newVelocities;
 		std::vector<int> newPhases;
@@ -296,14 +301,14 @@ public:
 		// build active indices list
 		g_buffers->activeIndices.resize(g_buffers->positions.size());
 		for (int i = 0; i < g_buffers->positions.size(); ++i)
-			g_buffers->activeIndices[i] = i;
+			g_buffers->activeIndices[i] = i;*/
 
 		// update constraint buffers
 		RebuildConstraints();
 
 		// restore mouse mass		
-		if (g_mouseParticle != -1)
-			g_buffers->positions[g_mouseParticle].w = 0.0f;
+		//if (g_mouseParticle != -1)
+		//	g_buffers->positions[g_mouseParticle].w = 0.0f;
 	}
 
 	virtual void Draw(int pass)
