@@ -2779,19 +2779,21 @@ void pyflex_init(bool render=true) {
 
 void pyflex_clean() {
 
-    if (g_fluidRenderer)
+    if (window_render) {
+        if (g_fluidRenderer)
         DestroyFluidRenderer(g_fluidRenderer);
 
-    DestroyFluidRenderBuffers(g_fluidRenderBuffers);
-    DestroyDiffuseRenderBuffers(g_diffuseRenderBuffers);
+        DestroyFluidRenderBuffers(g_fluidRenderBuffers);
+        DestroyDiffuseRenderBuffers(g_diffuseRenderBuffers);
 
-    ShadowDestroy(g_shadowMap);
+        ShadowDestroy(g_shadowMap);
 
+        DestroyRender();
+
+        SDL_DestroyWindow(g_window);
+        SDL_Quit();
+    }
     Shutdown();
-    DestroyRender();
-
-    SDL_DestroyWindow(g_window);
-    SDL_Quit();
 }
 
 int pymain() {
